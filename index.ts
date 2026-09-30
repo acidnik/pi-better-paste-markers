@@ -15,10 +15,18 @@
  * the whole block is replaced with the original paste content; everywhere else
  * (`getText()`) it collapses back to the canonical marker, so drafts,
  * autocomplete snapshots and undo all see the standard form.
+ *
+ * Delete keys are intercepted so the three lines behave as one unit: a single
+ * backspace/delete that touches a block removes the whole block, like the
+ * built-in `[paste #N ...]` marker.
  */
 
-import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import {
+	CustomEditor,
+	type ExtensionAPI,
+	type KeybindingsManager,
+} from "@earendil-works/pi-coding-agent";
+import { matchesKey, truncateToWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 
 /** The middle line of a paste block (our own format, ids from our own counter). */
 const MIDDLE_RE = /^paste #(\d+) (\d+) chars \/ (\d+) lines$/;
@@ -33,6 +41,25 @@ interface PasteRecord {
 	last: string;
 }
 
+/** Where a rendered three-line paste block lives in the editor buffer. */
+interface PasteBlock {
+	/** Logical line holding the leading `[first line...` preview. */
+	startLine: number;
+	/** Logical line holding the trailing `...last line]` preview. */
+	endLine: number;
+	/** Column in `startLine` where the block's opening `[` sits. */
+	startCol: number;
+	/** Column in `endLine` just past the block's closing `]`. */
+	endCol: number;
+	/** Paste id carried by the block's middle line. */
+	id: number;
+	/** The paste this block stands for. */
+	record: PasteRecord;
+}
+
+/** Which side of the block a deletion key bites from. */
+type DeleteDirection = "backward" | "forward" | "line";
+
 export default function betterPasteMarkers(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		ctx.ui.setEditorComponent(
@@ -45,6 +72,121 @@ export class BetterPasteEditor extends CustomEditor {
 	/** id -> record; ids come from our own counter, so they never collide. */
 	private pasteRecords = new Map<number, PasteRecord>();
 	private ownPasteCounter = 0;
+	private editorKeybindings: KeybindingsManager;
+
+	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
+		super(tui, theme, keybindings);
+		this.editorKeybindings = keybindings;
+	}
+
+	/**
+	 * Delete keys hit our three-line blocks as one unit: any deletion that would
+	 * bite into a block removes the whole block, matching the built-in
+	 * single-line `[paste #N ...]` marker behavior.
+	 */
+	override handleInput(data: string): void {
+		if (this.tryDeleteBlock(data)) return;
+		super.handleInput(data);
+	}
+
+	private tryDeleteBlock(data: string): boolean {
+		if (this.pasteRecords.size === 0 || this.isShowingAutocomplete()) return false;
+
+		const kb = this.editorKeybindings;
+		let direction: DeleteDirection | null = null;
+		if (
+			kb.matches(data, "tui.editor.deleteCharBackward") ||
+			kb.matches(data, "tui.editor.deleteWordBackward") ||
+			matchesKey(data, "shift+backspace")
+		) {
+			direction = "backward";
+		} else if (
+			kb.matches(data, "tui.editor.deleteCharForward") ||
+			kb.matches(data, "tui.editor.deleteWordForward") ||
+			matchesKey(data, "shift+delete")
+		) {
+			direction = "forward";
+		} else if (
+			kb.matches(data, "tui.editor.deleteToLineStart") ||
+			kb.matches(data, "tui.editor.deleteToLineEnd")
+		) {
+			// Ctrl+U / Ctrl+K can shear a block apart in the middle of a line,
+			// so treat any block line as a hit for these.
+			direction = "line";
+		}
+		if (!direction) return false;
+
+		const block = this.findBlocks().find((candidate) => this.cursorHitsBlock(candidate, direction!));
+		if (!block) return false;
+
+		this.deleteBlock(block);
+		return true;
+	}
+
+	/** Find every intact three-line block in `lines` (defaults to the buffer). */
+	private findBlocks(lines: string[] = this.state.lines): PasteBlock[] {
+		const blocks: PasteBlock[] = [];
+		for (let i = 0; i + 2 < lines.length; i++) {
+			const middle = MIDDLE_RE.exec(lines[i + 1] ?? "");
+			if (!middle) continue;
+			const id = Number(middle[1]);
+			const record = this.pasteRecords.get(id);
+			if (!record) continue;
+			const opening = `[${record.first}...`;
+			const closing = `...${record.last}]`;
+			const firstLine = lines[i] ?? "";
+			const lastLine = lines[i + 2] ?? "";
+			if (!firstLine.endsWith(opening) || !lastLine.startsWith(closing)) continue;
+			blocks.push({
+				startLine: i,
+				endLine: i + 2,
+				startCol: firstLine.length - opening.length,
+				endCol: closing.length,
+				id,
+				record,
+			});
+			i += 2; // the next block cannot overlap this one
+		}
+		return blocks;
+	}
+
+	/** Does a deletion in `direction` reach into this block? */
+	private cursorHitsBlock(block: PasteBlock, direction: DeleteDirection): boolean {
+		const line = this.state.cursorLine;
+		const col = this.state.cursorCol;
+		if (line < block.startLine || line > block.endLine) return false;
+		if (direction === "line") return true;
+
+		const firstLineLength = (this.state.lines[block.startLine] ?? "").length;
+		if (line === block.startLine) {
+			return direction === "backward"
+				? col > block.startCol && col <= firstLineLength
+				: col >= block.startCol && col <= firstLineLength;
+		}
+		if (line === block.endLine) {
+			return direction === "backward" ? col <= block.endCol : col < block.endCol;
+		}
+		return true; // middle line is entirely inside the block
+	}
+
+	/** Remove all block lines, keeping the text before and after on one line. */
+	private deleteBlock(block: PasteBlock): void {
+		this.pushUndoSnapshot();
+		this.lastAction = null;
+		this.exitHistoryBrowsing();
+
+		const lines = this.state.lines;
+		const before = (lines[block.startLine] ?? "").slice(0, block.startCol);
+		const after = (lines[block.endLine] ?? "").slice(block.endCol);
+		lines[block.startLine] = before + after;
+		lines.splice(block.startLine + 1, block.endLine - block.startLine);
+
+		// Keep the paste record: undo restores the block lines, and the record is
+		// what lets collapse()/expand() recognize them again afterwards.
+		this.state.cursorLine = block.startLine;
+		this.state.cursorCol = before.length;
+		if (this.onChange) this.onChange(this.getText());
+	}
 
 	override handlePaste(pastedText: string): void {
 		const filteredText = this.cleanPastedText(pastedText);
@@ -111,28 +253,22 @@ export class BetterPasteEditor extends CustomEditor {
 	private collapse(text: string): string {
 		if (this.pasteRecords.size === 0) return text;
 		const lines = text.split("\n");
-		const out: string[] = [];
-		for (let i = 0; i < lines.length; i++) {
-			const m = MIDDLE_RE.exec(lines[i]);
-			if (!m || !this.pasteRecords.has(Number(m[1]))) {
-				out.push(lines[i]);
-				continue;
-			}
-			const id = Number(m[1]);
-			const rec = this.pasteRecords.get(id)!;
-			const prev = out[out.length - 1];
-			if (prev !== undefined && prev.startsWith("[") && prev.endsWith("...")) {
-				out.pop(); // decorated first-line preview
-			}
-			const next = lines[i + 1];
-			if (next !== undefined && next.startsWith("...") && next.endsWith("]")) {
-				i++; // skip the decorated last-line preview
-			}
+		const blocks = this.findBlocks(lines);
+		if (blocks.length === 0) return text;
+		// Rewrite from the bottom up so earlier line indexes stay valid.
+		for (let b = blocks.length - 1; b >= 0; b--) {
+			const block = blocks[b]!;
+			const prefix = (lines[block.startLine] ?? "").slice(0, block.startCol);
+			const suffix = (lines[block.endLine] ?? "").slice(block.endCol);
 			// Canonical single-line marker (base format), so downstream code and
 			// older sessions see the usual form.
-			out.push(rec.lines > 10 ? `[paste #${id} +${rec.lines} lines]` : `[paste #${id} ${rec.chars} chars]`);
+			const canonical =
+				block.record.lines > 10
+					? `[paste #${block.id} +${block.record.lines} lines]`
+					: `[paste #${block.id} ${block.record.chars} chars]`;
+			lines.splice(block.startLine, block.endLine - block.startLine + 1, prefix + canonical + suffix);
 		}
-		return out.join("\n");
+		return lines.join("\n");
 	}
 
 	/** Replace collapsed canonical markers with their original content. */

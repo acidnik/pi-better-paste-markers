@@ -18,7 +18,8 @@ Pastes over 10 lines or 1000 chars render as a three-line block:
 - The block is ordinary editable buffer lines; the middle line carries the marker.
 - On submit the block is replaced with the original pasted content — nothing is lost.
 - Everywhere else (drafts, autocomplete, undo) the block collapses back to the standard single-line `[paste #N ...]` marker.
-- Editing/deleting the middle line of a block drops that paste on submit — same as deleting a built-in paste marker.
+- The block deletes as one unit: a single Backspace/Delete (or Ctrl+W/U/K) that touches it removes the whole block, like the built-in `[paste #N ...]` marker. Text before and after the block on the same line is kept.
+- Undo restores the whole block and it keeps expanding/submitting correctly.
 
 ## Install
 
@@ -31,5 +32,8 @@ pi install git:github.com/acidnik/pi-better-paste-markers
 The extension replaces the main editor on `session_start` via `ctx.ui.setEditorComponent()` with a `CustomEditor` subclass:
 
 - `handlePaste()` — small pastes delegate to the base; large pastes insert the 3-line block and keep the content in an extension-side map.
+- `handleInput()` — intercepts delete keys (`deleteCharBackward/Forward`, `deleteWordBackward/Forward`, `deleteToLineStart/End`) and removes the whole block when the cursor touches one; every other key goes to the base editor untouched.
 - `getText()` — collapses blocks back to canonical `[paste #N ...]` markers (drafts, autocomplete snapshots, undo).
 - `getExpandedText()` — submits the original pasted content (used by pi on submit and by the external-editor flow).
+
+Paste records are kept after a block is deleted so that undoing the deletion restores a block that still collapses and expands correctly.
