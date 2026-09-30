@@ -4,7 +4,34 @@
 	"description": "Richer collapsed paste markers for pi: first/last line preview around the canonical paste marker",
 	"type": "module",
 	"license": "MIT",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-extension",
+		"pi-coding-agent",
+		"paste",
+		"tui"
+	],
+	"author": "acidnik",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/acidnik/pi-better-paste-markers.git"
+	},
+	"homepage": "https://github.com/acidnik/pi-better-paste-markers#readme",
+	"bugs": {
+		"url": "https://github.com/acidnik/pi-better-paste-markers/issues"
+	},
+	"files": [
+		"index.ts",
+		"README.md"
+	],
 	"pi": {
-		"extensions": ["./index.ts"]
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
 	}
 }
