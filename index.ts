@@ -26,18 +26,20 @@ import {
 	type ExtensionAPI,
 	type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import { matchesKey, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 
 /** The middle line of a paste block (our own format, ids from our own counter). */
 const MIDDLE_RE = /^paste #(\d+) (\d+) chars \/ (\d+) lines$/;
-/** Fallback preview width when the terminal width is unknown. */
-const PREVIEW_FALLBACK_WIDTH = 72;
+/** Max characters shown for the first/last preview line before truncation. */
+const PREVIEW_MAX_CHARS = 80;
 
 interface PasteRecord {
 	content: string;
 	lines: number;
 	chars: number;
+	/** First-line preview; carries a trailing `...` when truncated. */
 	first: string;
+	/** Last-line preview; carries a leading `...` when truncated. */
 	last: string;
 }
 
@@ -132,8 +134,8 @@ export class BetterPasteEditor extends CustomEditor {
 			const id = Number(middle[1]);
 			const record = this.pasteRecords.get(id);
 			if (!record) continue;
-			const opening = `[${record.first}...`;
-			const closing = `...${record.last}]`;
+			const opening = `[${record.first}`;
+			const closing = `${record.last}]`;
 			const firstLine = lines[i] ?? "";
 			const lastLine = lines[i + 2] ?? "";
 			if (!firstLine.endsWith(opening) || !lastLine.startsWith(closing)) continue;
@@ -204,19 +206,19 @@ export class BetterPasteEditor extends CustomEditor {
 		this.pushUndoSnapshot();
 
 		const id = ++this.ownPasteCounter;
-		const width = (process.stdout.columns ?? 80) - 4;
 		this.pasteRecords.set(id, {
 			content: filteredText,
 			lines: pastedLines.length,
 			chars: filteredText.length,
-			first: truncateToWidth(pastedLines[0] ?? "", Math.max(width, 20)),
-			last: truncateLastLine(pastedLines[pastedLines.length - 1] ?? "", Math.max(width, 20)),
+			first: previewHead(pastedLines[0] ?? ""),
+			last: previewTail(pastedLines[pastedLines.length - 1] ?? ""),
 		});
 
+		const record = this.pasteRecords.get(id)!;
 		const block = [
-			`[${this.pasteRecords.get(id)!.first}...`,
+			`[${record.first}`,
 			`paste #${id} ${filteredText.length} chars / ${pastedLines.length} lines`,
-			`...${this.pasteRecords.get(id)!.last}]`,
+			`${record.last}]`,
 		];
 		this.insertTextAtCursorInternal(block.join("\n"));
 	}
@@ -297,8 +299,12 @@ export class BetterPasteEditor extends CustomEditor {
 	}
 }
 
-/** Truncate from the right, keeping the tail visible on the last-line preview. */
-function truncateLastLine(text: string, width: number): string {
-	if (text.length <= width) return text;
-	return text.slice(text.length - width + 3);
+/** First-line preview: keep the head, add `...` only when something was cut. */
+function previewHead(text: string): string {
+	return text.length <= PREVIEW_MAX_CHARS ? text : `${text.slice(0, PREVIEW_MAX_CHARS - 3)}...`;
+}
+
+/** Last-line preview: keep the tail, add `...` only when something was cut. */
+function previewTail(text: string): string {
+	return text.length <= PREVIEW_MAX_CHARS ? text : `...${text.slice(text.length - (PREVIEW_MAX_CHARS - 3))}`;
 }

@@ -15,6 +15,7 @@ Pastes over 10 lines or 1000 chars render as a three-line block:
 ```
 
 - Small pastes keep the built-in behavior (inserted as-is, no marker).
+- The first/last previews show up to 80 characters; `...` is added only when the line was actually cut.
 - The block is ordinary editable buffer lines; the middle line carries the marker.
 - On submit the block is replaced with the original pasted content — nothing is lost.
 - Everywhere else (drafts, autocomplete, undo) the block collapses back to the standard single-line `[paste #N ...]` marker.
