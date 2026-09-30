@@ -32,6 +32,8 @@ import { matchesKey, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 const MIDDLE_RE = /^paste #(\d+) (\d+) chars \/ (\d+) lines$/;
 /** Max characters shown for the first/last preview line before truncation. */
 const PREVIEW_MAX_CHARS = 80;
+/** Gray `❯` prompt drawn before the input line (matches pi-powerline-footer chrome). */
+const INPUT_PROMPT = "\x1b[38;2;200;200;200m❯\x1b[0m";
 
 interface PasteRecord {
 	content: string;
@@ -306,6 +308,45 @@ export class BetterPasteEditor extends CustomEditor {
 	 */
 	override expandPasteMarkers(text: string): string {
 		return this.expand(this.collapse(super.expandPasteMarkers(text)));
+	}
+
+	/**
+	 * Draw a `❯` prompt before the input, mirroring the chrome that
+	 * pi-powerline-footer applies to the default editor. Replacing the editor
+	 * component drops that wrapper, so we render the prompt ourselves.
+	 */
+	override render(width: number): string[] {
+		if (width < 10) return super.render(width);
+
+		const contentWidth = Math.max(1, width - 3);
+		const lines = super.render(contentWidth);
+		if (lines.length === 0) return lines;
+
+		// The bottom border is the last `───…` row before any autocomplete rows.
+		let bottomBorderIndex = lines.length - 1;
+		for (let i = lines.length - 1; i >= 1; i--) {
+			const stripped = (lines[i] ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+			if (stripped.length > 0 && /^─{3,}/.test(stripped)) {
+				bottomBorderIndex = i;
+				break;
+			}
+		}
+
+		const promptPrefix = ` ${INPUT_PROMPT} `;
+		const contPrefix = "   ";
+		const border = " " + this.borderColor("─".repeat(Math.max(0, width - 2)));
+		const result: string[] = [border];
+		for (let i = 1; i < bottomBorderIndex; i++) {
+			result.push(`${i === 1 ? promptPrefix : contPrefix}${lines[i] ?? ""}`);
+		}
+		if (bottomBorderIndex === 1) {
+			result.push(`${promptPrefix}${" ".repeat(contentWidth)}`);
+		}
+		result.push(border);
+		for (let i = bottomBorderIndex + 1; i < lines.length; i++) {
+			result.push(lines[i] ?? "");
+		}
+		return result;
 	}
 }
 

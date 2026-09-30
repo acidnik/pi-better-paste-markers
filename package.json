@@ -1,6 +1,6 @@
 {
 	"name": "pi-better-paste-markers",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Richer collapsed paste markers for pi: first/last line preview around the canonical paste marker",
 	"type": "module",
 	"license": "MIT",
