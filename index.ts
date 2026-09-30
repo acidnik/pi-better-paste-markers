@@ -297,6 +297,16 @@ export class BetterPasteEditor extends CustomEditor {
 	override getExpandedText(): string {
 		return this.expand(this.collapse(super.getText()));
 	}
+
+	/**
+	 * Plain Enter submits through the base editor's private `submitValue()`,
+	 * which expands paste markers with this method — not with
+	 * `getExpandedText()`. Shadowing it keeps our blocks from being submitted
+	 * as raw three-line preview text (the base registry never holds them).
+	 */
+	override expandPasteMarkers(text: string): string {
+		return this.expand(this.collapse(super.expandPasteMarkers(text)));
+	}
 }
 
 /** First-line preview: keep the head, add `...` only when something was cut. */

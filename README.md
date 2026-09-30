@@ -35,6 +35,7 @@ The extension replaces the main editor on `session_start` via `ctx.ui.setEditorC
 - `handlePaste()` — small pastes delegate to the base; large pastes insert the 3-line block and keep the content in an extension-side map.
 - `handleInput()` — intercepts delete keys (`deleteCharBackward/Forward`, `deleteWordBackward/Forward`, `deleteToLineStart/End`) and removes the whole block when the cursor touches one; every other key goes to the base editor untouched.
 - `getText()` — collapses blocks back to canonical `[paste #N ...]` markers (drafts, autocomplete snapshots, undo).
-- `getExpandedText()` — submits the original pasted content (used by pi on submit and by the external-editor flow).
+- `expandPasteMarkers()` — plain Enter submits through the base editor's private `submitValue()`, which expands paste markers with this method; shadowing it makes Enter submit the original pasted content instead of the three-line preview.
+- `getExpandedText()` — used by the follow-up (Alt+Enter), external-editor and extension-API (`getEditorText`) paths.
 
 Paste records are kept after a block is deleted so that undoing the deletion restores a block that still collapses and expands correctly.
