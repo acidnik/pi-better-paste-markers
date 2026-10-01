@@ -64,10 +64,19 @@ interface PasteBlock {
 /** Which side of the block a deletion key bites from. */
 type DeleteDirection = "backward" | "forward" | "line";
 
+/** Minimal slice of pi's app theme we need to paint the block background. */
+interface ThemeBackgroundProvider {
+	bg(color: string, text: string): string;
+}
+
+/** Theme key used as the paste-block background (also used for user messages). */
+const BLOCK_BG = "userMessageBg";
+
 export default function betterPasteMarkers(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
+		const getAppTheme = () => ctx.ui.theme as unknown as ThemeBackgroundProvider;
 		ctx.ui.setEditorComponent(
-			(tui, theme, keybindings) => new BetterPasteEditor(tui, theme, keybindings),
+			(tui, theme, keybindings) => new BetterPasteEditor(tui, theme, keybindings, getAppTheme),
 		);
 	});
 }
@@ -77,10 +86,18 @@ export class BetterPasteEditor extends CustomEditor {
 	private pasteRecords = new Map<number, PasteRecord>();
 	private ownPasteCounter = 0;
 	private editorKeybindings: KeybindingsManager;
+	/** Resolves the current app theme so the block background follows theme switches. */
+	private getAppTheme?: () => ThemeBackgroundProvider;
 
-	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
+	constructor(
+		tui: TUI,
+		theme: EditorTheme,
+		keybindings: KeybindingsManager,
+		getAppTheme?: () => ThemeBackgroundProvider,
+	) {
 		super(tui, theme, keybindings);
 		this.editorKeybindings = keybindings;
+		this.getAppTheme = getAppTheme;
 	}
 
 	/**
@@ -346,7 +363,57 @@ export class BetterPasteEditor extends CustomEditor {
 		for (let i = bottomBorderIndex + 1; i < lines.length; i++) {
 			result.push(lines[i] ?? "");
 		}
+		this.paintBlocks(result, bottomBorderIndex);
 		return result;
+	}
+
+	/** Block text portions that should carry the background, longest first. */
+	private blockSpans(): string[] {
+		const lines = this.state.lines;
+		const spans: string[] = [];
+		for (const block of this.findBlocks()) {
+			const first = lines[block.startLine] ?? "";
+			const middle = lines[block.startLine + 1] ?? "";
+			const last = lines[block.endLine] ?? "";
+			if (block.endLine === block.startLine + 2) {
+				spans.push(first.slice(block.startCol), middle, last.slice(0, block.endCol));
+			} else {
+				for (let line = block.startLine; line <= block.endLine; line++) spans.push(lines[line] ?? "");
+			}
+		}
+		return spans.filter((span) => span.length > 0).sort((a, b) => b.length - a.length);
+	}
+
+	/** ANSI prefix for the block background, or null when the theme lacks it. */
+	private blockBackground(): string | null {
+		const theme = this.getAppTheme?.();
+		if (!theme) return null;
+		try {
+			const wrapped = theme.bg(BLOCK_BG, "");
+			const reset = "\x1b[49m";
+			const ansi = wrapped.endsWith(reset) ? wrapped.slice(0, -reset.length) : wrapped;
+			return ansi || null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Paint only the block text (not the padding) with the theme background. */
+	private paintBlocks(rows: string[], bottomBorderIndex: number): void {
+		const spans = this.blockSpans();
+		if (spans.length === 0) return;
+		const background = this.blockBackground();
+		if (!background) return;
+		for (let i = 1; i < bottomBorderIndex; i++) {
+			const row = rows[i];
+			if (row === undefined) continue;
+			for (const span of spans) {
+				if (stripAnsi(row).includes(span)) {
+					rows[i] = paintSpan(row, span, background);
+					break;
+				}
+			}
+		}
 	}
 }
 
@@ -358,4 +425,66 @@ function previewHead(text: string): string {
 /** Last-line preview: keep the tail, add `...` only when something was cut. */
 function previewTail(text: string): string {
 	return text.length <= PREVIEW_MAX_CHARS ? text : `...${text.slice(text.length - (PREVIEW_MAX_CHARS - 3))}`;
+}
+
+/** Length of the escape/APC sequence starting at `index`, or 0 for plain text. */
+function ansiSequenceLength(text: string, index: number): number {
+	if (text[index] !== "\x1b") return 0;
+	const next = text[index + 1];
+	if (next === "[") {
+		for (let i = index + 2; i < text.length; i++) {
+			const code = text.charCodeAt(i);
+			if (code >= 0x40 && code <= 0x7e) return i - index + 1;
+		}
+		return text.length - index;
+	}
+	if (next === "_" || next === "]" || next === "P" || next === "^") {
+		for (let i = index + 2; i < text.length; i++) {
+			if (text[i] === "\x07") return i - index + 1;
+			if (text[i] === "\x1b" && text[i + 1] === "\\") return i - index + 2;
+		}
+		return text.length - index;
+	}
+	return 2;
+}
+
+/** Drop ANSI/APC escape sequences, keeping the visible characters. */
+function stripAnsi(text: string): string {
+	let out = "";
+	for (let i = 0; i < text.length; ) {
+		const esc = ansiSequenceLength(text, i);
+		if (esc > 0) {
+			i += esc;
+			continue;
+		}
+		out += text[i];
+		i++;
+	}
+	return out;
+}
+
+/** Paint only the `span` characters of `row` with `background`, leaving padding untouched. */
+function paintSpan(row: string, span: string, background: string): string {
+	const startPlain = stripAnsi(row).indexOf(span);
+	if (startPlain < 0) return row;
+	const endPlain = startPlain + span.length;
+	let plain = 0;
+	let start = -1;
+	let end = -1;
+	for (let i = 0; i < row.length; ) {
+		const esc = ansiSequenceLength(row, i);
+		if (esc > 0) {
+			i += esc;
+			continue;
+		}
+		if (plain === startPlain) start = i;
+		// `end` sits right after the last span character, so a cursor escape that
+		// follows the text stays outside the painted range.
+		if (plain === endPlain - 1) end = i + 1;
+		plain++;
+		i++;
+	}
+	if (start < 0 || end < 0) return row;
+	const inner = row.slice(start, end).replaceAll("\x1b[0m", `\x1b[0m${background}`);
+	return `${row.slice(0, start)}${background}${inner}\x1b[49m${row.slice(end)}`;
 }

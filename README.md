@@ -22,6 +22,7 @@ Pastes over 10 lines or 1000 chars render as a three-line block:
 - The block deletes as one unit: a single Backspace/Delete (or Ctrl+W/U/K) that touches it removes the whole block, like the built-in `[paste #N ...]` marker. Text before and after the block on the same line is kept.
 - Undo restores the whole block and it keeps expanding/submitting correctly.
 - The input is prefixed with a gray `❯` prompt (the one pi-powerline-footer draws on the default editor is lost when a custom editor component replaces it).
+- The block is painted with the theme's `userMessageBg` background (follows light/dark and theme switches); only the block text is filled, the padding after it stays normal.
 
 ## Install
 
@@ -38,6 +39,6 @@ The extension replaces the main editor on `session_start` via `ctx.ui.setEditorC
 - `getText()` — collapses blocks back to canonical `[paste #N ...]` markers (drafts, autocomplete snapshots, undo).
 - `expandPasteMarkers()` — plain Enter submits through the base editor's private `submitValue()`, which expands paste markers with this method; shadowing it makes Enter submit the original pasted content instead of the three-line preview.
 - `getExpandedText()` — used by the follow-up (Alt+Enter), external-editor and extension-API (`getEditorText`) paths.
-- `render()` — prefixes the input with a gray `❯` and keeps the other content lines indented, matching the chrome pi-powerline-footer adds to the default editor.
+- `render()` — prefixes the input with a gray `❯`, keeps the other content lines indented, and paints the paste-block text with `ctx.ui.theme.bg("userMessageBg", …)` (re-applied after the cursor's reset so the highlight survives the cursor).
 
 Paste records are kept after a block is deleted so that undoing the deletion restores a block that still collapses and expands correctly.
